@@ -284,18 +284,8 @@ sub refresh_sources {
 sub _source_to_db {
     my ( $t, $section ) = @_;
 
-    my %values;
-    ###FIXME - get all children, not just by name
-    foreach my $key ( qw/Download_Filme_1 Datum Zeit/ ) {
-        my $element = $section->first_child( $key );
-        if ( $element ) {
-            $values{$key} = $element->text();
-        }
-    }
-    my ( $day,  $month, $year ) = split( /\./, $values{Datum} );
-    my ( $hour, $min,   $sec )  = split( /:/,  $values{Zeit} );
-    my $date = Class::Date->new( [ $year, $month, $day, $hour, $min, $sec ] );
-    $t->{mediathek_sth}->execute( $values{Download_Filme_1}, $date );
+    my $date = Class::Date->new(time);
+    $t->{mediathek_sth}->execute( $section->first_child('URL')->text(), $date );
 }
 
 =head2 refresh_media
@@ -372,14 +362,14 @@ sub refresh_media {
     $self->dbh->do( 'DELETE FROM map_media' );
     $self->dbh->do( 'DELETE FROM media' );
 
-    my $t = XML::Twig->new( twig_handlers => { Filme => \&_media_to_db, }, );
+    my $t = XML::Twig->new( twig_handlers => { X => \&_media_to_db, }, );
 
     # Prepare the statement handlers
     my $sths = {};
     my $sql =
         'INSERT OR IGNORE INTO media '
-      . '( nr, filename, title, date, url, url_auth, url_hd, url_org, url_rtmp, url_theme ) '
-      . 'VALUES( ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )';
+      . '( filename, title, date, url, url_auth, url_hd, url_rtmp ) '
+      . 'VALUES( ?, ?, ?, ?, ?, ?, ? )';
     $sths->{ins_media} = $self->dbh->prepare( $sql );
 
     $sql = 'INSERT OR IGNORE INTO channels ( channel ) VALUES( ? )';
@@ -423,50 +413,63 @@ sub refresh_media {
 
 # Local XML::Twig twig handler method for importing media to the database.
 # Expects to receive a twig with the required statement handlers initialised.
-# <Filme><Nr>0000</Nr><Sender>3Sat</Sender><Thema>3sat.full</Thema><Titel>Mediathek-Beiträge</Titel><Datum>04.09.2011</Datum><Zeit>19:23:11</Zeit><Url>http://wstreaming.zdf.de/3sat/veryhigh/110103_jazzbaltica2010ceu_musik.asx</Url><UrlOrg>http://wstreaming.zdf.de/3sat/300/110103_jazzbaltica2010ceu_musik.asx</UrlOrg><Datei>110103_jazzbaltica2010ceu_musik.asx</Datei><Film-alt>false</Film-alt></Filme>
+# <X><b>3Sat</b><c>3sat</c><d>Der Mann mit den 100 Kindern</d><e>02.02.2015</e><f>23:00:00</f><m>00:51:40</m><t>912</t><n>Der Niederländer Ed Houben ist Vater von mittlerweile mehr als 100 Kindern. Doch er ist kein Casanova mit unzähligen Liebschaften, er ist seit vielen Jahren als Samenspender tätig. Anfangs...</n><bb>DE-AT-CH</bb><g>http://nrodl.zdf.de/dach/3sat/15/02/150202_mann_mit_100_kindern_online_2256k_p14v11.mp4</g><k>http://www.3sat.de/mediathek/?mode=play&amp;obj=49070</k><r>71|436k_p9v11.mp4</r><y>1422914400</y></X>
 sub _media_to_db {
     my ( $t, $section ) = @_;
 
     my %values;
+
+    my $sender_elem = $section->first_child('b');
+    if ( $sender_elem ) {
+        $t->{sender} = $sender_elem->text();
+    }
+    $values{b} = $t->{sender};
+
+    my $thema_elem = $section->first_child('c');
+    if ( $thema_elem ) {
+        $t->{thema} = $thema_elem->text();
+    }
+    $values{c} = $t->{thema};
+
     ###FIXME - get all children, not just by name
-    foreach my $key ( qw/Datei Nr Sender Thema Titel Datum Url UrlOrg UrlAuth UrlHD UrlRTMP UrlThema/ ) {
+    foreach my $key ( qw/d e g j t i/ ) {
         my $element = $section->first_child( $key );
         if ( $element ) {
             $values{$key} = $element->text();
         }
     }
 
-    foreach ( qw/Url Sender Thema Titel/ ) {
+    foreach ( qw/g c d/ ) {
         if ( !$values{$_} ) {
-            warn( "$_ not defined for entry $values{Nr}.  Skipping.\n" );
+            warn( "$_ not defined for entry '$values{d}'.  Skipping.\n" );
             return undef;
         }
     }
 
     my ( $row, $sql );
     my $sths = $t->{mediathek_sths};
-    $sths->{ins_channel}->execute( $values{Sender} );
+    $sths->{ins_channel}->execute( $values{b} );
 
-    $sths->{sel_channel_id}->execute( $values{Sender} );
+    $sths->{sel_channel_id}->execute( $values{b} );
     $row = $sths->{sel_channel_id}->fetchrow_hashref();
     if ( !$row ) {
-        die( "Could not find channel_id for $values{Sender} at entry number $values{Nr}" );
+        die( "Could not find channel_id for $values{b} at entry '$values{d}'" );
     }
     my $channel_id = $row->{channel_id};
 
-    $sths->{ins_theme}->execute( $channel_id, $values{Thema} );
-    $sths->{sel_theme_id}->execute( $channel_id, $values{Thema} );
+    $sths->{ins_theme}->execute( $channel_id, $values{c} );
+    $sths->{sel_theme_id}->execute( $channel_id, $values{c} );
     $row = $sths->{sel_theme_id}->fetchrow_hashref();
     if ( !$row ) {
-        die(    "Could not find themeid for Theme \"$values{Thema}\" and "
-              . "Channel \"$values{Sender}\" (channel_id $channel_id) at entry number $values{Nr}" );
+        die(    "Could not find themeid for Theme \"$values{c}\" and "
+              . "Channel \"$values{b}\" (channel_id $channel_id) at entry '$values{d}'" );
     }
     my $theme_id = $row->{theme_id};
 
     local $Class::Date::DATE_FORMAT = "%Y-%m-%d";
     my $date;
-    if ( $values{Datum} ) {
-        my ( $day, $month, $year ) = split( /\./, $values{Datum} );
+    if ( $values{e} ) {
+        my ( $day, $month, $year ) = split( /\./, $values{e} );
         $date = Class::Date->new( [ $year, $month, $day ] );
     } else {
 
@@ -474,16 +477,14 @@ sub _media_to_db {
         $date = date( time );
     }
 
+    my ($filename) = $values{g} =~ m{([^/]+)$};
     # Add the media data
-    #( filename, title, datum, url, url_auth, url_hd, url_org, url_rtmp, url_theme )
-    $sths->{ins_media}->execute(
-        $values{Nr},      $values{Datei}, $values{Titel},  $date,            $values{Url},
-        $values{UrlAuth}, $values{UrlHD}, $values{UrlOrg}, $values{UrlRTMP}, $values{UrlThema}
-    );
-    $sths->{sel_media_id}->execute( $values{Url} );
+    #( filename, title, datum, url, url_auth, url_hd, url_rtmp )
+    $sths->{ins_media}->execute( $filename, $values{d}, $date, $values{g}, $values{j}, $values{t}, $values{i});
+    $sths->{sel_media_id}->execute( $values{g} );
     $row = $sths->{sel_media_id}->fetchrow_hashref();
     if ( !$row ) {
-        die( "Could not find media with url $values{Url}" );
+        die( "Could not find media with url $values{g}" );
     }
     my $media_id = $row->{media_id};
 
